@@ -1,0 +1,1 @@
+SELECT * FROM real_time_category_stats ORDER BY total_revenue DESC;
