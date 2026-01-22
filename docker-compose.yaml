@@ -1,13 +1,15 @@
 version: '3'
+
 services:
+  # --- INFRASTRUCTURE ---
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
+    networks:
+      - livekart_net
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
@@ -15,16 +17,20 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "9092:29092" # External Port Map
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # SEPARATE LISTENERS (Internal vs External)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - livekart_net
 
+  # --- DATABASE ---
   postgres:
     image: postgres:13
     container_name: livekart_db
@@ -34,10 +40,10 @@ services:
       POSTGRES_DB: livekart_db
     ports:
       - "5434:5432"
-    volumes:
-      - pg_livekart_data:/var/lib/postgresql/data
+    networks:
+      - livekart_net
 
-  # --- CHANGED: Using Official Apache Image ---
+  # --- SPARK (Processing Engine) ---
   spark-master:
     image: apache/spark:3.5.0
     container_name: spark-master
@@ -45,13 +51,79 @@ services:
     ports:
       - "8080:8080"
       - "7077:7077"
+    networks:
+      - livekart_net
+    volumes:
+      - ./scripts:/opt/spark/scripts
+      - ./data:/opt/spark/data
+    user: root
 
   spark-worker:
     image: apache/spark:3.5.0
     container_name: spark-worker
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       - spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    networks:
+      - livekart_net
+    volumes:
+      - ./scripts:/opt/spark/scripts
+      - ./data:/opt/spark/data
+    user: root
 
-volumes:
-  pg_livekart_data:
+  # --- AIRFLOW (Orchestration) ---
+  airflow-webserver:
+    image: apache/airflow:2.7.1-python3.11
+    container_name: airflow_engine
+    command: webserver
+    ports:
+      - "8090:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW_ADMIN_USER=admin
+      - AIRFLOW_ADMIN_PASSWORD=admin
+      - AIRFLOW__WEBSERVER__SECRET_KEY=my_fixed_secret_key_123 # Fixes 403 Error
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
+      - /var/run/docker.sock:/var/run/docker.sock # Fixes Docker launch error
+    depends_on:
+      - airflow-db
+    networks:
+      - livekart_net
+
+  airflow-scheduler:
+    image: apache/airflow:2.7.1-python3.11
+    container_name: airflow_scheduler
+    command: scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+      - AIRFLOW__WEBSERVER__SECRET_KEY=my_fixed_secret_key_123 # Must match webserver
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - airflow-db
+    networks:
+      - livekart_net
+
+  airflow-db:
+    image: postgres:13
+    container_name: airflow_metadata_db
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    networks:
+      - livekart_net
+
+networks:
+  livekart_net:
+    driver: bridge

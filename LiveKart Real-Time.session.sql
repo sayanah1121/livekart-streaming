@@ -1,0 +1,1 @@
+SELECT * FROM batch_profit_analysis;

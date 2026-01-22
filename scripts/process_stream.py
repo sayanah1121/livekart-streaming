@@ -1,81 +1,68 @@
-import sys
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, sum, count
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType
-
-# --- CONFIGURATION ---
-# Note: Spark runs INSIDE Docker, so it talks to 'livekart_db' (Container Name) on port 5432
-DB_URL = "jdbc:postgresql://livekart_db:5432/livekart_db"
-DB_PROPERTIES = {
-    "user": "admin",
-    "password": "password",
-    "driver": "org.postgresql.Driver"
-}
-
-def create_spark_session():
-    return SparkSession.builder \
-        .appName("LiveKart_RealTime_Analytics") \
-        .getOrCreate()
-
-def write_to_postgres(df, epoch_id):
-    """
-    This function runs for every single micro-batch.
-    It takes the current state of the data and overwrites the SQL table.
-    """
-    print(f"Write Batch {epoch_id} to Database...")
-    try:
-        # We use mode("overwrite") because 'Complete' mode gives us the WHOLE table every time.
-        # We replace the old dashboard data with the fresh numbers.
-        df.write.jdbc(url=DB_URL, table="real_time_category_stats", mode="overwrite", properties=DB_PROPERTIES)
-    except Exception as e:
-        print(f" Database Write Failed: {e}")
+from pyspark.sql.functions import from_json, col, current_timestamp
+from pyspark.sql.types import StructType, StringType, IntegerType, FloatType
 
 def process_stream():
-    spark = create_spark_session()
-    spark.sparkContext.setLogLevel("ERROR")
+    spark = SparkSession.builder \
+        .appName("LiveKart_Streaming_Lambda") \
+        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.6.0,io.delta:delta-spark_2.12:3.0.0") \
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+        .getOrCreate()
 
-    print("⏳ Starting Real-Time Stream to PostgreSQL...")
+    # Schema
+    schema = StructType() \
+        .add("order_id", StringType()) \
+        .add("user_id", StringType()) \
+        .add("product_id", StringType()) \
+        .add("category", StringType()) \
+        .add("price", FloatType()) \
+        .add("quantity", IntegerType()) \
+        .add("timestamp", StringType())
 
-    # 1. Define Schema
-    schema = StructType([
-        StructField("order_id", StringType()),
-        StructField("user_id", StringType()),
-        StructField("product", StringType()),
-        StructField("category", StringType()),
-        StructField("price", DoubleType()),
-        StructField("timestamp", LongType()),
-        StructField("payment_method", StringType())
-    ])
-
-    # 2. Read from Kafka
-    raw_stream = spark.readStream \
+    # Read Kafka
+    df = spark.readStream \
         .format("kafka") \
-        .option("kafka.bootstrap.servers", "kafka:29092") \
+        .option("kafka.bootstrap.servers", "kafka:9092") \
         .option("subscribe", "livekart_orders") \
-        .option("startingOffsets", "latest") \
         .load()
 
-    # 3. Parse Data
-    clean_stream = raw_stream.select(
-        from_json(col("value").cast("string"), schema).alias("data")
-    ).select("data.*")
+    # Parse JSON
+    json_df = df.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
+    
+    # Enrich with timestamp
+    processed_df = json_df.withColumn("ingestion_time", current_timestamp())
 
-    # 4. Aggregate (Live Dashboard Logic)
-    category_stats = clean_stream.groupBy("category") \
-        .agg(
-            sum("price").alias("total_revenue"),
-            count("order_id").alias("order_count")
-        )
+    # --- SINK 1: REAL-TIME DASHBOARD (Postgres) ---
+    def write_to_postgres(batch_df, batch_id):
+        # Aggregation for Dashboard
+        agg_df = batch_df.groupBy("category").agg({"price": "sum"}).withColumnRenamed("sum(price)", "total_revenue")
+        
+        agg_df.write \
+            .format("jdbc") \
+            .option("url", "jdbc:postgresql://livekart_db:5432/livekart_db") \
+            .option("dbtable", "real_time_category_stats") \
+            .option("user", "admin") \
+            .option("password", "password") \
+            .option("driver", "org.postgresql.Driver") \
+            .mode("append") \
+            .save()
+            
+    # --- SINK 2: DATA LAKE ARCHIVE (Bronze Layer for Airflow) ---
+    # We use 'append' mode to Parquet/Delta for historical analysis
+    file_query = processed_df.writeStream \
+        .format("delta") \
+        .outputMode("append") \
+        .option("checkpointLocation", "/opt/spark/data/checkpoints/bronze") \
+        .option("path", "/opt/spark/data/lake/bronze") \
+        .start()
 
-    # 5. Write to Database (The Change)
-    # outputMode("complete"): "Give me the entire updated table"
-    # foreachBatch: "Pass that table to our custom function to write to SQL"
-    query = category_stats.writeStream \
-        .outputMode("complete") \
+    # Start Postgres Stream
+    db_query = processed_df.writeStream \
         .foreachBatch(write_to_postgres) \
         .start()
 
-    query.awaitTermination()
+    spark.streams.awaitAnyTermination()
 
 if __name__ == "__main__":
     process_stream()
