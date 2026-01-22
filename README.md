@@ -1,43 +1,41 @@
-# LiveKart: Lambda Architecture Analytics Engine 🏎️💨
+# LiveKart: High-Throughput E-Commerce Data Platform (Lambda Architecture)
 
-A full-stack Big Data pipeline implementing the **Lambda Architecture** to process e-commerce transactions. It combines a **Speed Layer** for real-time dashboards and a **Batch Layer** for complex profitability analysis.
+LiveKart is a professional-grade Data Engineering project implementing a **Lambda Architecture**. It handles high-frequency e-commerce transaction streams, providing both real-time ingestion and deep-dive batch analytics.
 
-## 🏗️ Architecture
-This project implements the **Lambda Architecture** pattern:
+## 🏗️ Architecture Overview
+The system is built to handle the "3 Vs" of data (Volume, Velocity, Variety):
 
-1.  **Ingestion:** Python Producer generates synthetic order traffic $\rightarrow$ **Apache Kafka**.
-2.  **Speed Layer (Real-Time):**
-    * **Spark Structured Streaming** reads from Kafka.
-    * **Sink 1:** Writes aggregated revenue metrics to **PostgreSQL** (Live Dashboard).
-    * **Sink 2:** appends raw data to **Delta Lake (Bronze)** for historical archiving.
-3.  **Batch Layer (Historical):**
-    * Orchestrated by **Apache Airflow**.
-    * **Spark Batch Job** reads Delta Lake (Bronze) + Static Product Catalog (CSV).
-    * Calculates **Profit Margins** (Price - Cost) and writes to **PostgreSQL (Analytics Table)**.
-4.  **Maintenance:** Automated file compaction tasks managed by Airflow to optimize Lake performance.
+1.  **Producer Layer:** Python-based simulation generating rich JSON transaction data (Order IDs, User IDs, Product IDs, Categories, and Quantities).
+2.  **Streaming Layer (Speed):** **Apache Kafka** acts as the message broker, while **Spark Structured Streaming** ingests the data in real-time.
+3.  **Storage Layer:** Data is persisted in **Delta Lake** (Bronze Layer), providing ACID transactions and schema enforcement.
+4.  **Orchestration Layer:** **Apache Airflow** manages the workflow, running a sequential pipeline of Spark Batch jobs.
+5.  **Analytics Layer (Batch):** 6 specialized Spark jobs process historical data to derive complex business KPIs.
+6.  **Serving Layer:** Processed insights are pushed via JDBC to a **PostgreSQL** Data Warehouse for BI consumption.
+
+## 📊 Business Intelligence Modules
+The platform automatically calculates and updates the following metrics:
+* **Customer Segmentation:** Classifies users into Platinum, Gold, and Silver tiers based on lifetime spend.
+* **Supplier Performance:** Tracks net profit margins by joining sales data with supplier catalogs.
+* **Market Share Analysis:** Calculates real-time revenue percentage breakdown across all product categories.
+* **Hourly Sales Velocity:** Identifies peak traffic hours to optimize infrastructure and marketing spend.
+* **Top-Selling Products:** Ranks the top 20 products by unit volume across the entire platform.
+* **Profit Margin Analytics:** Detailed gap analysis between retail pricing and supplier costs.
 
 ## 🛠️ Tech Stack
-* **Streaming:** Apache Kafka, Spark Structured Streaming
-* **Batch:** Apache Spark (PySpark), Delta Lake 3.0
-* **Orchestration:** Apache Airflow 2.7 (DockerOperator)
-* **Storage:** PostgreSQL 13 (Serving), Local Data Lake (Storage)
-* **Infrastructure:** Docker & Docker Compose
+* **Languages:** Python, SQL, Scala/Java (Spark Core)
+* **Streaming:** Apache Kafka
+* **Data Processing:** Apache Spark (Structured Streaming + Batch)
+* **Table Format:** Delta Lake (ACID compliant)
+* **Orchestration:** Apache Airflow
+* **Database:** PostgreSQL
+* **Containerization:** Docker & Docker-Compose
 
-## 🚀 How to Run
-1.  **Start Infrastructure:** `docker-compose up -d`
-2.  **Initialize Airflow:**
-    ```bash
-    docker-compose run --rm airflow-webserver airflow db migrate
-    docker-compose run --rm airflow-webserver airflow users create --username admin --password admin --firstname Data --lastname Engineer --role Admin --email admin@example.com
-    ```
-3.  **Start Producer:** `python scripts/producer.py`
-4.  **Start Streaming Job:**
-    ```bash
-    docker exec -u 0 -it spark-master /opt/spark/bin/spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.6.0,io.delta:delta-spark_2.12:3.0.0 /opt/spark/scripts/process_stream.py
-    ```
-5.  **Trigger Batch Job:** Access Airflow at `http://localhost:8090` and run `livekart_lambda_batch`.
+## 🚀 Getting Started
 
-## 📊 Key Results
-* **Latency:** <1 second for Dashboard updates.
-* **Reliability:** Exact-once processing semantics via Checkpointing.
-* **Insight:** Combined view of "Gross Revenue" (Real-time) and "Net Profit" (Batch).
+### 1. Infrastructure Setup
+```powershell
+docker-compose up -d
+# Initialize Airflow Metadata
+docker-compose run --rm airflow-webserver airflow db migrate
+# Create Admin User (admin/admin)
+docker-compose run --rm airflow-webserver airflow users create --username admin --password admin --firstname Data --lastname Engineer --role Admin --email admin@example.com

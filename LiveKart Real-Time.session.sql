@@ -1,1 +1,1 @@
-SELECT * FROM batch_profit_analysis;
+SELECT * FROM biz_user_segments ORDER BY total_lifetime_spend DESC LIMIT 5;
